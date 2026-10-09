@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mersenne Twister, seeded by your browser</title>
+<style>
+  :root {
+    --bg: #F2F4F7; --surface: #FFFFFF; --ink: #1A2233; --muted: #5B6577;
+    --accent: #3346C8; --ok: #2E7D4F; --bad: #B3261E; --line: #D5DAE3;
+    color-scheme: light dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #10141C; --surface: #1A2030; --ink: #E6EAF2; --muted: #9AA3B5;
+      --accent: #8C9BFF; --ok: #6CC08E; --bad: #F08A80; --line: #2C3446;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 1rem/1.55 "Avenir Next", Avenir, "Segoe UI", system-ui, sans-serif;
+  }
+  main { max-width: 46rem; margin: 0 auto; padding: 3rem 1.25rem 4rem; }
+  h1 {
+    font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+    font-weight: 600; font-size: clamp(1.9rem, 5vw, 2.75rem); line-height: 1.12;
+    margin: 0 0 .75rem; max-width: 18ch;
+  }
+  .lede { color: var(--muted); max-width: 60ch; margin: 0 0 2.25rem; }
+  .lab { display: grid; grid-template-columns: minmax(0, 17rem) 1fr; gap: 1.75rem; align-items: start; }
+  @media (max-width: 40rem) { .lab { grid-template-columns: 1fr; } }
+  figure { margin: 0; }
+  canvas {
+    display: block; width: 100%; max-width: 17rem; aspect-ratio: 1 / 1;
+    image-rendering: pixelated; border: 2px solid var(--ink);
+  }
+  figcaption { font-size: .875rem; color: var(--muted); margin-top: .6rem; max-width: 17rem; }
+  dl { margin: 0; display: grid; gap: .9rem; }
+  dt { font-size: .875rem; color: var(--muted); }
+  dd { margin: .1rem 0 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+  code { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: .9em; }
+  .controls { display: flex; flex-wrap: wrap; gap: .6rem; margin: 2.25rem 0 1rem; }
+  button {
+    font: inherit; font-size: .95rem; padding: .55rem 1rem; border-radius: 999px;
+    border: 1.5px solid var(--ink); background: transparent; color: var(--ink); cursor: pointer;
+  }
+  button:hover { background: var(--surface); }
+  button:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  #reseed { margin-left: auto; border-color: var(--accent); color: var(--accent); }
+  .log { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }
+  .log li {
+    display: flex; justify-content: space-between; gap: 1rem; padding: .55rem 0;
+    border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums;
+  }
+  .log li span:first-child { color: var(--muted); }
+  .log li:first-child span:last-child { font-weight: 600; }
+  .log:empty::before { content: "Results appear here, newest first."; display: block; padding: .55rem 0; color: var(--muted); }
+  .ok { color: var(--ok); }
+  .bad { color: var(--bad); }
+  footer { margin-top: 2.5rem; font-size: .9rem; color: var(--muted); max-width: 62ch; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Mersenne Twister, seeded by your browser</h1>
+  <p class="lede">Everything here runs from this one HTML file, with no imports and no network requests.
+    The generator is seeded with 19,968 bits from <code>crypto.getRandomValues()</code>, enough to fill its entire internal state.</p>
+
+  <div class="lab">
+    <figure>
+      <canvas id="noise" width="128" height="128" aria-label="Grayscale noise drawn from the generator"></canvas>
+      <figcaption>Each pixel is one draw from the generator. Visible stripes or patterns would mean a broken generator.</figcaption>
+    </figure>
+    <dl>
+      <div><dt>Seed source</dt><dd id="source"><code>crypto.getRandomValues()</code></dd></div>
+      <div><dt>Current seed</dt><dd id="seed">Not seeded yet</dd></div>
+      <div><dt>Self-test</dt><dd id="test">Not run. This page needs JavaScript and a browser from 2021 or later.</dd></div>
+    </dl>
+  </div>
+
+  <div class="controls">
+    <button id="die" type="button">Roll a die</button>
+    <button id="float" type="button">Random number</button>
+    <button id="uint" type="button">32-bit integer</button>
+    <button id="reseed" type="button">New seed</button>
+  </div>
+  <ol class="log" id="log" aria-live="polite"></ol>
+
+  <footer>To reuse the generator, copy the first <code>&lt;script&gt;</code> block in this file into your own page or into a
+    plain <code>.js</code> file. It defines <code>MersenneTwister</code> as a global, with no exports needed.</footer>
+</main>
+
+<!-- ===== Mersenne Twister library: copy this block to reuse it ===== -->
+<script>
+/**
+ * MT19937 — 32-bit Mersenne Twister, port of mt19937ar.c by Matsumoto & Nishimura.
+ * Seeds from crypto.getRandomValues() by default. NOT cryptographically secure output.
+ */
+class MersenneTwister {
+  static #N = 624;
+  static #M = 397;
+  #mt = new Uint32Array(624);
+  #index = 624;
+
+  /** Fresh seed from the browser's cryptographic random source. */
+  static secureSeed(words = 624) {
+    const c = globalThis.crypto;
+    if (!c || typeof c.getRandomValues !== "function") {
+      throw new Error("No cryptographic random source available");
+    }
+    return c.getRandomValues(new Uint32Array(words));
+  }
+
+  /** @param {number | number[] | Uint32Array} [seed] Defaults to a 624-word crypto seed. */
+  constructor(seed = MersenneTwister.secureSeed()) {
+    if (Array.isArray(seed) || ArrayBuffer.isView(seed)) this.seedArray(seed);
+    else this.seed(seed);
+  }
+
+  /** Re-seed with a single 32-bit integer (init_genrand). */
+  seed(s) {
+    const mt = this.#mt, N = MersenneTwister.#N;
+    mt[0] = s >>> 0;
+    for (let i = 1; i < N; i++) {
+      const prev = mt[i - 1] ^ (mt[i - 1] >>> 30);
+      mt[i] = Math.imul(1812433253, prev) + i;
+    }
+    this.#index = N;
+    return this;
+  }
+
+  /** Re-seed with an array or typed array of 32-bit integers (init_by_array). */
+  seedArray(key) {
+    if (key.length === 0) throw new RangeError("Seed array must not be empty");
+    this.seed(19650218);
+    const mt = this.#mt, N = MersenneTwister.#N;
+    let i = 1, j = 0;
+    for (let k = Math.max(N, key.length); k > 0; k--) {
+      const prev = mt[i - 1] ^ (mt[i - 1] >>> 30);
+      mt[i] = (mt[i] ^ Math.imul(prev, 1664525)) + (key[j] >>> 0) + j;
+      i++; j++;
+      if (i >= N) { mt[0] = mt[N - 1]; i = 1; }
+      if (j >= key.length) j = 0;
+    }
+    for (let k = N - 1; k > 0; k--) {
+      const prev = mt[i - 1] ^ (mt[i - 1] >>> 30);
+      mt[i] = (mt[i] ^ Math.imul(prev, 1566083941)) - i;
+      i++;
+      if (i >= N) { mt[0] = mt[N - 1]; i = 1; }
+    }
+    mt[0] = 0x80000000;
+    this.#index = N;
+    return this;
+  }
+
+  #twist() {
+    const mt = this.#mt, N = MersenneTwister.#N, M = MersenneTwister.#M;
+    for (let k = 0; k < N; k++) {
+      const y = (mt[k] & 0x80000000) | (mt[(k + 1) % N] & 0x7fffffff);
+      mt[k] = mt[(k + M) % N] ^ (y >>> 1) ^ (y & 1 ? 0x9908b0df : 0);
+    }
+    this.#index = 0;
+  }
+
+  /** Unsigned 32-bit integer in [0, 2^32 − 1]. */
+  nextUint32() {
+    if (this.#index >= MersenneTwister.#N) this.#twist();
+    let y = this.#mt[this.#index++];
+    y ^= y >>> 11;
+    y ^= (y << 7) & 0x9d2c5680;
+    y ^= (y << 15) & 0xefc60000;
+    y ^= y >>> 18;
+    return y >>> 0;
+  }
+
+  /** Float in [0, 1) with 32-bit resolution, like Math.random(). */
+  random() { return this.nextUint32() / 4294967296; }
+
+  /** Float in [0, 1) with full 53-bit precision. */
+  random53() {
+    const a = this.nextUint32() >>> 5, b = this.nextUint32() >>> 6;
+    return (a * 67108864 + b) / 9007199254740992;
+  }
+
+  /** Unbiased integer in [min, max] inclusive. */
+  int(min, max) {
+    if (!Number.isInteger(min) || !Number.isInteger(max) || max < min) {
+      throw new RangeError("min and max must be integers with min <= max");
+    }
+    const range = max - min + 1;
+    if (range > 4294967296) throw new RangeError("Range must not exceed 2^32");
+    const limit = 4294967296 - (4294967296 % range);
+    let r;
+    do r = this.nextUint32(); while (r >= limit);
+    return min + (r % range);
+  }
+}
+</script>
+<!-- ===== End of library ===== -->
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const ctx = $("noise").getContext("2d");
+  const buttons = document.querySelectorAll("button");
+  let rng;
+
+  function selfTest() {
+    const a = new MersenneTwister(5489);
+    const first = a.nextUint32();
+    for (let i = 1; i < 9999; i++) a.nextUint32();
+    const tenThousandth = a.nextUint32();
+    const b = new MersenneTwister([0x123, 0x234, 0x345, 0x456]);
+    const seq = Array.from({ length: 5 }, () => b.nextUint32()).join(",");
+    return first === 3499211612 && tenThousandth === 4123659995 &&
+      seq === "1067595299,955945823,477289528,4107218783,4228976476";
+  }
+
+  function paintNoise() {
+    const img = ctx.createImageData(128, 128);
+    const d = img.data;
+    for (let i = 0; i < d.length; i += 4) {
+      d[i] = d[i + 1] = d[i + 2] = rng.nextUint32() >>> 24;
+      d[i + 3] = 255;
+    }
+    ctx.putImageData(img, 0, 0);
+  }
+
+  function reseed() {
+    const seed = MersenneTwister.secureSeed();
+    rng = new MersenneTwister(seed);
+    const head = Array.from(seed.subarray(0, 3), (w) => w.toString(16).padStart(8, "0")).join(" ");
+    const code = document.createElement("code");
+    code.textContent = head;
+    $("seed").replaceChildren(code, ` and ${seed.length - 3} more words`);
+    $("log").replaceChildren();
+    paintNoise();
+  }
+
+  function log(label, value) {
+    const li = document.createElement("li");
+    const a = document.createElement("span"), b = document.createElement("span");
+    a.textContent = label;
+    b.textContent = value;
+    li.append(a, b);
+    $("log").prepend(li);
+    while ($("log").children.length > 8) $("log").lastElementChild.remove();
+  }
+
+  const passed = selfTest();
+  $("test").textContent = passed
+    ? "Matches the reference implementation"
+    : "Does not match the reference implementation. Don't rely on this generator in this browser.";
+  $("test").className = passed ? "ok" : "bad";
+
+  try {
+    reseed();
+  } catch (err) {
+    $("source").textContent = "Not available";
+    $("source").className = "bad";
+    $("seed").textContent = "This browser has no cryptographic random source, so the generator was not started. " +
+      "Open the page in a current version of Chrome, Edge, Firefox or Safari.";
+    buttons.forEach((btn) => { btn.disabled = true; });
+    return;
+  }
+
+  $("die").addEventListener("click", () => log("Die", rng.int(1, 6)));
+  $("float").addEventListener("click", () => log("Random number", rng.random53()));
+  $("uint").addEventListener("click", () => log("32-bit integer", rng.nextUint32()));
+  $("reseed").addEventListener("click", reseed);
+})();
+</script>
+</body>
+</html>
